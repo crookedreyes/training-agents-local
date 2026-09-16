@@ -5,6 +5,11 @@ description: Use when building, reviewing, or editing TRL post-training workflow
 
 # TRL Post-Training
 
+Local execution policy: use prepared filesystem assets, local inference and
+verifiers, local Trackio and persistent local artifacts. No external runtime
+services, download fallback or remote teacher/judge. See the repository guide `docs/local-execution.md` (path relative to the repo root).
+
+
 Use this skill to design or implement post-training tasks with TRL for models
 that will act as agents.
 
@@ -15,7 +20,7 @@ that will act as agents.
 2. Confirm the dataset format before choosing trainer arguments.
 3. Pick the smallest smoke run that exercises tokenization, generation, reward,
    logging, and saving.
-4. Add Trackio for anything long-running or remote.
+4. Add Trackio for long-running local experiments.
 5. Document the eval protocol before claiming model improvement.
 
 ## Method Selection

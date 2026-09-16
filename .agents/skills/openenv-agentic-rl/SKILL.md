@@ -5,6 +5,11 @@ description: Use when designing, reviewing, or implementing OpenEnv-style enviro
 
 # OpenEnv Agentic RL
 
+Local execution policy: use prepared filesystem assets, local inference and
+verifiers, local Trackio and persistent local artifacts. No external runtime
+services, download fallback or remote teacher/judge. See the repository guide `docs/local-execution.md` (path relative to the repo root).
+
+
 Use this skill when an agent training task needs an interactive environment
 rather than a static prompt.
 

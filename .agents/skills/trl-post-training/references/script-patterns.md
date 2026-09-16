@@ -27,6 +27,6 @@ Critical checks:
 
 ## CLI Configs
 
-Use YAML configs for reproducibility when commands become long. Keep model,
-dataset, trainer arguments, tracking, output path, and seed in the config. Use
+Use YAML configs for reproducibility when commands become long. Keep local model/data paths,
+trainer arguments, local tracking/output paths, and seed in the config. Use
 command-line overrides only for deliberate sweeps.

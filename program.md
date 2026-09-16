@@ -6,7 +6,7 @@ with TRL.
 The program has two tracks that should reinforce each other:
 
 - Use Codex agents to produce better training plans, scripts, evaluations,
-  monitoring, and reviews.
+  monitoring, and reviews on local assets.
 - Train models that become better agents through chat data, tool traces,
   verifiable rewards, environments, and distillation.
 
@@ -21,7 +21,10 @@ The program has two tracks that should reinforce each other:
 
 ## Operating Loop
 
-For each challenge:
+For each challenge, use `docs/local-execution.md`; invoke sub-agents only when
+the user explicitly requests delegation. Research links are optional preparation
+inputs, not network dependencies of the experiment loop.
+
 
 1. Define a measurable goal and stopping rule.
 2. Ask `research-scout` to verify the relevant TRL/OpenEnv/HF docs and current
@@ -29,7 +32,7 @@ For each challenge:
 3. Ask `training-planner` for a method sketch, ladder position, and risk list.
 4. Ask `trl-implementer` or the main agent to write one minimal script.
 5. Ask `script-runner` to run smoke commands and capture failures.
-6. Ask `tracking-reporter` to wire Trackio, grep logs, and inspect remote
+6. Ask `tracking-reporter` to wire Trackio, grep logs, and inspect local
    artifacts.
 7. Ask `integrity-reviewer` to check leakage, eval validity, and result claims.
 8. Record the durable lesson in `research/notes.md` or `research/results.tsv`,

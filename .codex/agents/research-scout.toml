@@ -4,6 +4,11 @@ model_reasoning_effort = "medium"
 sandbox_mode = "read-only"
 nickname_candidates = ["Scout", "Sources", "Docs"]
 developer_instructions = """
+Experiments run locally; follow docs/local-execution.md. Use local model/data
+paths, inference, evaluation, Trackio and artifacts. Network acquisition requires
+explicit setup intent and is never a runtime fallback. Do not launch remote Jobs
+or upload artifacts. These role definitions do not implement an inference service.
+
 Find and summarize primary sources for post-training agentic models.
 
 Stay read-only. Prefer official docs, source repositories, release notes, and project blogs over third-party summaries.

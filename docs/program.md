@@ -3,6 +3,10 @@
 Use this ladder to grow post-training tasks from simple supervised learning to
 agentic reinforcement learning and distillation.
 
+Only SFT currently has a runnable implementation. Later rungs need a separate
+implementation and smoke test. All model/data/teacher/verifier inputs are local;
+see [local execution](local-execution.md).
+
 ## 1. SFT
 
 Goal: teach the model the interaction format and basic task behavior.
@@ -14,8 +18,7 @@ Use:
 - assistant-only or completion-only loss where supported
 - small eval split and a smoke generation script
 - Trackio for loss, token accuracy, and throughput
-- trace training with reviewed Hub agent traces, for example
-  `trl sft --dataset_name julien-c/synthtraces`
+- trace training with reviewed local JSONL sessions; use the offline SFT example
 - reusable trace-training examples under `examples/`, such as the Gemma 4
   Pi-Mono SFT runbook
 

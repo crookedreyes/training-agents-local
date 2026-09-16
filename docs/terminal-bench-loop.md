@@ -26,12 +26,13 @@ The loop should stop only when one of these is true:
 
 Read state before researching or launching anything:
 
-- `/Users/ben/.codex/automations/post-training-agent-experiments/memory.md`
+- `workspaces/local-agent/loop/memory.md` (initialize when the loop first runs)
 - `research/notes.md`
 - `research/results.tsv`
 - `research/issues.md` or any repo-local bug table that exists
 
-Then discover current methods and sources:
+During optional preparation, discover methods and sources; runtime uses the
+recorded local copies:
 
 - TRL examples and docs for SFT, GRPO, DAPO or Dr. GRPO loss variants, reward
   scaling, and OpenEnv environment rollouts
@@ -54,8 +55,8 @@ Before launching jobs, write down the planned rung:
 - dataset and train/eval split policy
 - reward or eval definition
 - smallest smoke command
-- sweep size, seeds, learning rates, and node count
-- Trackio project or Space
+- sweep size, seeds, learning rates, and GPU assignment
+- local Trackio project
 - artifact destination
 - score gate and next decision
 
@@ -70,7 +71,7 @@ Use repo-local skills for the corresponding part of the plan:
 | Trackio and log inspection | `$trackio-observability` |
 | Hub, Jobs, buckets, and artifact movement | `$hugging-face-cli-workflows` |
 
-Use sub-agents when parallel work is helpful and available:
+Use sub-agents only when the user explicitly requests delegation:
 
 | Loop Role | Sub-agent |
 | --- | --- |
@@ -78,7 +79,7 @@ Use sub-agents when parallel work is helpful and available:
 | current docs, papers, and source lookup | `research-scout` |
 | one coherent TRL implementation | `trl-implementer` |
 | command execution and failure summaries | `script-runner` |
-| Trackio, SLURM, HF Jobs, and artifact status | `tracking-reporter` |
+| local Trackio, processes, and artifact status | `tracking-reporter` |
 | environment protocol design | `openenv-builder` |
 | self-distillation and trace filtering | `self-distillation-designer` |
 | leakage, score validity, and release claims | `integrity-reviewer` |
@@ -94,27 +95,16 @@ execution becomes repetitive enough to deserve its own agent.
 
 Run only experiments that advance the loop state.
 
-Cluster requirements:
+Workstation requirements:
 
-- use SLURM on `hpc-cluster-hopper-login-node-1`
-- use `/opt/slurm/bin/squeue --me` for job inspection when `squeue` is not on
-  the login shell path
-- run 2-4 training jobs when capacity and project state allow
-- use between 1 and 4 complete nodes
-- jobs greater than 1 node must run on `hopper-extra`
-- jobs of exactly 1 node must run on `hopper-prod`
-- never allocate more than 1 node on `hopper-prod`
-- use only `low` or `normal` priority for routine automation work
-- prefer FSx-backed caches, virtualenvs, run roots, and temporary directories
-
-Every remote run should have:
-
-- exact launch command or SLURM script
-- job id
-- model, dataset, library versions, and commit if relevant
-- Trackio Space for long or remote training
-- persistent artifact path on FSx, Hub, bucket, or model repo
-- checkpoint save before any in-process post-eval that might hang
+- Follow `local-execution.md`; use prepared local model/data/container assets.
+- Start with one explicitly selected 16 GB GPU and one smoke run. The two GPU
+  memories are separate. Do not use inference auto-placement as a training strategy.
+- Use local process IDs/status and files under `workspaces/local-agent/`.
+- No SLURM, cloud Jobs, hosted Spaces, FSx, remote inference or automatic uploads.
+- Save checkpoints before post-eval. Record commands, versions, asset hashes,
+  split manifests, local Trackio location and evaluation output.
+- Use separate local verifier execution with isolated code execution and no network.
 
 ## Verify
 
@@ -122,7 +112,7 @@ The verifier must be separate from the trainer whenever possible.
 
 Verification order:
 
-1. local or remote smoke that proves tokenization, reward parsing, logging, and
+1. offline local smoke that proves tokenization, reward parsing, logging, and
    checkpoint save
 2. held-out task or proxy gate, such as TB Lite or OpenThoughts-style held-out
    tasks
@@ -131,7 +121,7 @@ Verification order:
 
 Do not promote a checkpoint from training reward alone. Promote only when a
 held-out evaluation improves over the base model or the previous best adapter.
-The evaluator sub-agent should check this gate before any Hub release or
+The evaluator sub-agent should check this gate before local checkpoint promotion or
 benchmark claim.
 
 ## Iterate
@@ -157,7 +147,7 @@ Iteration rules:
 - if syntax improves but task success stays flat, move to semantic data or a
   stronger model comparison
 - if a proxy score is still 0, avoid full Terminal-Bench claims
-- if a checkpoint beats the gate, publish it to the Hub with a Trackio link and
+- if a checkpoint beats the gate, promote it to the local artifact registry with a local Trackio link and
   concise README report
 
 ## Run Report
@@ -167,7 +157,7 @@ Each automation run should report:
 - current loop stage and score gate
 - research findings used for the next decision
 - experiments launched or skipped with reasons
-- SLURM jobs, resources, and status
+- local processes, GPU assignments, and status
 - Trackio dashboards
 - eval results and whether they beat base or previous best
 - artifact locations

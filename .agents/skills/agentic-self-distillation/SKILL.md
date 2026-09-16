@@ -5,6 +5,11 @@ description: Use when designing or reviewing self-distillation workflows for age
 
 # Agentic Self-Distillation
 
+Local execution policy: use prepared filesystem assets, local inference and
+verifiers, local Trackio and persistent local artifacts. No external runtime
+services, download fallback or remote teacher/judge. See the repository guide `docs/local-execution.md` (path relative to the repo root).
+
+
 Use this skill to turn verified agent behavior into better post-training data.
 
 ## Workflow

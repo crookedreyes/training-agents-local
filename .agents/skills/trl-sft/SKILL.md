@@ -5,6 +5,11 @@ description: Use when designing, implementing, reviewing, or debugging supervise
 
 # TRL SFT
 
+Local execution policy: use prepared filesystem assets, local inference and
+verifiers, local Trackio and persistent local artifacts. No external runtime
+services, download fallback or remote teacher/judge. See the repository guide `docs/local-execution.md` (path relative to the repo root).
+
+
 Use this skill for the first rung of the Training Agents ladder: supervised
 fine-tuning models to follow chat formats, use tools, and imitate verified
 agent traces.
@@ -19,7 +24,7 @@ agent traces.
    only when intentional.
 4. Start with a smoke run that loads the dataset, tokenizes examples, trains for
    a few steps, evaluates or generates one sample, and saves an artifact.
-5. Add Trackio for non-trivial local runs or any remote run.
+5. Add Trackio for non-trivial local runs.
 6. Record the exact model, dataset, split, command, seed, and output path.
 
 ## Defaults
@@ -42,18 +47,9 @@ converted into teachable message sequences. Do not train directly on raw private
 traces without checking for secrets, personal data, private code, and tool output
 that should not be learned.
 
-Minimal trace-dataset command pattern:
-
-```bash
-trl sft \
-  --model_name_or_path Qwen/Qwen2.5-0.5B \
-  --dataset_name julien-c/synthtraces \
-  --output_dir outputs/sft-synthtraces-smoke
-```
-
-Treat this as a starting point, not a final recipe. Inspect the dataset columns
-and write a formatting function or preprocessing step if the raw trace rows are
-not already in a TRL-supported SFT format.
+For the runnable local SFT command, use `docs/local-execution.md` and
+`examples/gemma4-pi-mono-sft/train_sft.py`. Supply explicit model and raw-data paths;
+validate completion masks, grouped splits and a GPU smoke before scaling.
 
 ## References
 

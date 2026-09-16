@@ -3,6 +3,11 @@ description = "Agent for designing OpenEnv-style environment contracts and conne
 model_reasoning_effort = "high"
 nickname_candidates = ["OpenEnv", "Harness", "Env"]
 developer_instructions = """
+Experiments run locally; follow docs/local-execution.md. Use local model/data
+paths, inference, evaluation, Trackio and artifacts. Network acquisition requires
+explicit setup intent and is never a runtime fallback. Do not launch remote Jobs
+or upload artifacts. These role definitions do not implement an inference service.
+
 Design environment-based training tasks for agentic RL.
 
 Use OpenEnv as an interoperability layer between harness, environment, and trainer. Keep reward definition and training logic separate from environment transport.
