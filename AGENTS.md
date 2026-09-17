@@ -9,7 +9,7 @@ challenge guides, and lightweight lab memory for post-training with TRL.
 - Treat "agents" in both senses: Codex agents doing the research work, and
   language models being post-trained for agentic behavior.
 - Prefer TRL-native methods and APIs for training plans: SFT, DPO, GRPO, RLOO,
-  reward modeling, PEFT/LoRA, Accelerate, Trackio, and Hugging Face Hub/Jobs.
+  reward modeling, PEFT/LoRA, Accelerate, and local Trackio.
 - Optimize for agentic applications: tool calling, environment interaction,
   verifiable rewards, trace quality, task completion, recovery behavior, and
   reliable evaluation.
@@ -39,7 +39,7 @@ Use repo-local skills when the task matches them:
 - `$trackio-observability`: Trackio projects, run naming, logs, metrics, grep,
   SFTP, and artifact inspection.
 - `$hugging-face-cli-workflows`: `hf` CLI, Hub repos, Jobs, buckets, auth,
-  upload/download, and remote artifacts.
+  explicit setup downloads, offline bundles, and local artifacts.
 - `$openenv-agentic-rl`: OpenEnv-style environment contracts for agentic RL.
 - `$agentic-self-distillation`: trace collection, critique, teacher/student
   loops, rejection sampling, and iterative distillation.
@@ -80,10 +80,13 @@ time to avoid conflicts.
 - Use small smoke runs before long Jobs or multi-GPU runs.
 - If `eval_strategy` is enabled, provide an `eval_dataset`; otherwise disable
   evaluation explicitly.
-- For remote Hugging Face Jobs training, create or reuse a hosted Trackio
-  Space with `trackio.init(..., space_id=...)`, report the dashboard URL, and
-  push artifacts to persistent Hub storage. Short local smoke runs may use
-  local Trackio logging or document why tracking is skipped.
+- Run training, inference, evaluation, logging and artifact storage locally.
+  HF libraries are allowed; external runtime services are not. Follow
+  `docs/local-execution.md`. Downloads belong only to explicit setup commands.
+- Use local Trackio for long runs, loopback dashboards and persistent local paths.
+  Require local model/tokenizer/data paths and no fallback downloads or uploads.
+- Split trace data by session/task group, keep benchmark tasks out of training,
+  and identify the exact checkpoint scored by each evaluation.
 - Separate reward functions from environment transport. OpenEnv is an
   environment interoperability layer, not the reward definition itself.
 

@@ -10,12 +10,18 @@ It is not a training codebase. Keep checkpoints, datasets, logs, and experiment
 outputs outside the tracked repo, usually under ignored `workspaces/`
 directories or separate project repositories.
 
+## Local execution
+
+Training, inference, evaluation, tracking and artifacts run on this workstation.
+Hugging Face libraries remain supported; cloud services are not runtime dependencies.
+Start with [the local setup and validation guide](docs/local-execution.md).
+
 ## Examples
 
-- `examples/gemma4-pi-mono-sft/`: TRL SFT example for
-  `google/gemma-4-E2B-it` on `badlogicgames/pi-mono`, with Hugging Face Jobs,
-  LoRA, hosted Trackio logging, verified Job IDs, Inspect AI HumanEval/MBPP
-  coding evals, and private adapter artifact repos.
+- `examples/gemma4-pi-mono-sft/`: local TRL/PEFT SFT, explicit asset preparation,
+  offline inference, local Trackio, and isolated Inspect coding evaluations.
+- GRPO, environment RL and self-distillation remain staged guides, not implemented
+  training pipelines. Historical remote records live under `docs/` and `research/`.
 
 ## Guides
 

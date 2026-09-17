@@ -1,23 +1,6 @@
-# /// script
-# dependencies = [
-#   "accelerate>=1.13.0",
-#   "bitsandbytes>=0.48.0; platform_system == 'Linux'",
-#   "datasets>=4.4.0",
-#   "huggingface-hub>=1.1.0",
-#   "jinja2>=3.1.0",
-#   "peft>=0.18.0",
-#   "torch>=2.12.0",
-#   "trackio>=0.3.0",
-#   "transformers>=5.11.0",
-#   "trl>=1.6.0",
-# ]
-# ///
-
 """SFT Gemma 4 E2B-it on badlogicgames/pi-mono coding-agent traces.
 
-This script intentionally avoids datasets.load_dataset("badlogicgames/pi-mono"):
-the Hub dataset is raw session JSONL and the dataset-server table generation can
-fail on mixed session content. It downloads raw *.jsonl traces, converts visible
+Offline template: reads prepared local raw session JSONL, converts visible
 assistant/tool-call turns to prompt/completion examples, and uses TRL
 completion-only loss so user prompts and tool outputs are not training targets.
 """
@@ -28,6 +11,7 @@ import argparse
 import atexit
 import copy
 import hashlib
+import importlib.metadata
 import json
 import os
 import random
@@ -37,11 +21,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from local_runtime import (
+    configure_local_runtime,
+    file_manifest,
+    local_directory,
+    validate_device,
+    validate_model,
+)
 
-DEFAULT_MODEL_ID = "google/gemma-4-E2B-it"
-DEFAULT_DATASET_ID = "badlogicgames/pi-mono"
 DEFAULT_PROJECT = "training-agents-sft"
-DEFAULT_RUN_NAME = "gemma4-e2b-it-pi-mono-lora"
+DEFAULT_RUN_NAME = ""
 DEFAULT_LORA_TARGET_REGEX = (
     r".*language_model\.layers\.\d+\."
     r"(self_attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(gate_proj|up_proj|down_proj))"
@@ -170,18 +159,16 @@ class ConversionStats:
     skipped_render_errors: int = 0
     skipped_prefix_mismatch: int = 0
     skipped_empty_completion: int = 0
+    invalid_events: int = 0
+    skipped_token_prefix: int = 0
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
-    parser.add_argument("--dataset-id", default=DEFAULT_DATASET_ID)
-    parser.add_argument("--raw-dir", default="")
-    parser.add_argument("--work-dir", default="workspaces/gemma4-pi-mono-sft")
-    parser.add_argument("--output-dir", default="outputs/gemma4-e2b-it-pi-mono-lora")
-    parser.add_argument("--hub-model-id", default="")
-    parser.add_argument("--push-to-hub", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--hub-private-repo", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--raw-dir", required=True)
+    parser.add_argument("--work-dir", default="workspaces/local-agent/prepared/pi-mono")
+    parser.add_argument("--output-dir", default="workspaces/local-agent/runs/sft")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--skip-tokenizer-check", action="store_true")
     parser.add_argument("--max-files", type=int, default=0)
@@ -219,11 +206,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--bf16", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--trackio-project", default=DEFAULT_PROJECT)
-    parser.add_argument("--trackio-space-id", default="")
     parser.add_argument("--trackio-group", default="pi-mono-sft-sweep")
-    parser.add_argument("--trackio-private-space", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--run-name", default=DEFAULT_RUN_NAME)
-    return parser.parse_args()
+    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--runtime-dir", default="workspaces/local-agent")
+    parser.add_argument("--resume-from-checkpoint", default="")
+    parser.add_argument(
+        "--split-groups", help="Optional JSON mapping source filenames to related task/session group IDs"
+    )
+    args = parser.parse_args()
+    args.run_name = args.run_name or Path(args.output_dir).name
+    for name in ("eval_size", "max_files", "max_examples"):
+        if getattr(args, name) < 0:
+            parser.error(f"--{name.replace('_', '-')} cannot be negative")
+    for name in (
+        "max_length",
+        "per_device_train_batch_size",
+        "per_device_eval_batch_size",
+        "gradient_accumulation_steps",
+        "logging_steps",
+        "eval_steps",
+        "save_steps",
+        "lora_r",
+    ):
+        if getattr(args, name) <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
+    if args.device == "cpu" and (args.bf16 or args.load_in_4bit):
+        parser.error("CPU smoke requires --no-bf16 --no-load-in-4bit")
+    return args
 
 
 def clip_text(text: str, max_chars: int) -> str:
@@ -273,7 +283,10 @@ def convert_tool_call(part: dict[str, Any]) -> dict[str, Any] | None:
     if arguments is None:
         arguments = {}
     return {
-        "id": str(part.get("id") or f"call_{hashlib.sha1(json.dumps(part, sort_keys=True, default=str).encode()).hexdigest()[:12]}"),
+        "id": str(
+            part.get("id")
+            or f"call_{hashlib.sha1(json.dumps(part, sort_keys=True, default=str).encode()).hexdigest()[:12]}"
+        ),
         "type": "function",
         "function": {
             "name": str(name),
@@ -282,7 +295,9 @@ def convert_tool_call(part: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def extract_assistant_message(raw_message: dict[str, Any], stats: ConversionStats, args: argparse.Namespace) -> dict[str, Any] | None:
+def extract_assistant_message(
+    raw_message: dict[str, Any], stats: ConversionStats, args: argparse.Namespace
+) -> dict[str, Any] | None:
     parts = raw_message.get("content") or []
     text = extract_text_parts(parts, stats, args.max_assistant_chars)
     tool_calls: list[dict[str, Any]] = []
@@ -312,7 +327,9 @@ def extract_assistant_message(raw_message: dict[str, Any], stats: ConversionStat
     return message
 
 
-def raw_event_to_chat_message(event: dict[str, Any], stats: ConversionStats, args: argparse.Namespace) -> dict[str, Any] | None:
+def raw_event_to_chat_message(
+    event: dict[str, Any], stats: ConversionStats, args: argparse.Namespace
+) -> dict[str, Any] | None:
     if event.get("type") != "message":
         return None
     stats.message_events += 1
@@ -386,35 +403,39 @@ def trim_context(messages: list[dict[str, Any]], args: argparse.Namespace) -> li
         context = tail
 
     if not any(message.get("role") == "user" for message in context):
-        context = [{"role": "user", "content": "Continue the coding-agent session from the preceding context."}] + context
-
-    def compact_value(value: Any, max_chars: int) -> Any:
-        if isinstance(value, str):
-            return clip_text(value, max_chars)
-        if isinstance(value, dict):
-            return {key: compact_value(item, max_chars) for key, item in value.items()}
-        if isinstance(value, list):
-            return [compact_value(item, max_chars) for item in value[:32]]
-        return value
+        context = [
+            {"role": "user", "content": "Continue the coding-agent session from the preceding context."}
+        ] + context
 
     def compact_messages(rows: list[dict[str, Any]], max_chars: int) -> list[dict[str, Any]]:
         compacted = [copy.deepcopy(row) for row in rows]
         for row in compacted:
             if isinstance(row.get("content"), str):
                 row["content"] = clip_text(row["content"], max_chars)
-            if row.get("tool_calls"):
-                row["tool_calls"] = compact_value(row["tool_calls"], max_chars)
         return compacted
 
     for per_field_limit in (4000, 2000, 1000, 500):
         compacted = compact_messages(context, per_field_limit)
         if len(json.dumps(compacted, ensure_ascii=False, default=str)) <= args.max_prompt_chars:
-            return compacted
+            return coherent_context(compacted)
         context = compacted
 
-    while len(json.dumps(context, ensure_ascii=False, default=str)) > args.max_prompt_chars and len(context) > 2:
+    while (
+        len(json.dumps(context, ensure_ascii=False, default=str)) > args.max_prompt_chars and len(context) > 2
+    ):
         del context[1]
-    return context
+    return coherent_context(context)
+
+
+def coherent_context(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    calls: set[str] = set()
+    result = []
+    for message in messages:
+        if message["role"] == "tool" and message.get("tool_call_id") not in calls:
+            continue
+        result.append(message)
+        calls.update(call["id"] for call in message.get("tool_calls", []))
+    return result
 
 
 def load_raw_events(path: Path, stats: ConversionStats) -> list[dict[str, Any]]:
@@ -425,7 +446,18 @@ def load_raw_events(path: Path, stats: ConversionStats) -> list[dict[str, Any]]:
                 continue
             stats.events += 1
             try:
-                events.append(json.loads(line))
+                event = json.loads(line)
+                if not isinstance(event, dict) or (
+                    event.get("type") == "message" and not isinstance(event.get("message"), dict)
+                ):
+                    stats.invalid_events += 1
+                    continue
+                if event.get("type") == "message" and not isinstance(
+                    event["message"].get("content", []), (list, str)
+                ):
+                    stats.invalid_events += 1
+                    continue
+                events.append(event)
             except json.JSONDecodeError:
                 stats.json_errors += 1
     return events
@@ -450,7 +482,11 @@ def render_prompt_completion(
     return prompt, full[len(prompt) :]
 
 
-def build_examples(raw_dir: Path, processor: Any, args: argparse.Namespace) -> tuple[list[dict[str, Any]], ConversionStats]:
+def build_examples(
+    raw_dir: Path, processor: Any, args: argparse.Namespace
+) -> tuple[list[dict[str, Any]], ConversionStats]:
+    from jinja2 import TemplateError
+
     stats = ConversionStats()
     examples: list[dict[str, Any]] = []
     files = sorted(raw_dir.glob("*.jsonl"))
@@ -460,6 +496,9 @@ def build_examples(raw_dir: Path, processor: Any, args: argparse.Namespace) -> t
     for file_index, path in enumerate(files):
         stats.files += 1
         events = load_raw_events(path, stats)
+        session_ids = [str(e["id"]) for e in events if e.get("type") == "session" and e.get("id")]
+        source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        group_id = session_ids[0] if session_ids else source_hash
         tool_names: set[str] = set()
         for event in events:
             if event.get("type") != "message":
@@ -480,7 +519,7 @@ def build_examples(raw_dir: Path, processor: Any, args: argparse.Namespace) -> t
                 context = trim_context(conversation, args)
                 try:
                     prompt, completion = render_prompt_completion(processor, context, message, tools)
-                except Exception:
+                except (ValueError, TypeError, KeyError, IndexError, TemplateError):
                     stats.skipped_render_errors += 1
                 else:
                     if not completion.strip():
@@ -488,10 +527,18 @@ def build_examples(raw_dir: Path, processor: Any, args: argparse.Namespace) -> t
                     elif not prompt:
                         stats.skipped_prefix_mismatch += 1
                     else:
+                        prompt_ids = processor(prompt, add_special_tokens=False)["input_ids"]
+                        full_ids = processor(prompt + completion, add_special_tokens=False)["input_ids"]
+                        if full_ids[: len(prompt_ids)] != prompt_ids or len(full_ids) <= len(prompt_ids):
+                            stats.skipped_token_prefix += 1
+                            conversation.append(message)
+                            continue
                         examples.append(
                             {
                                 "id": stable_example_id(path.name, str(event.get("id") or ""), message_index),
                                 "source_file": path.name,
+                                "group_id": group_id,
+                                "source_sha256": source_hash,
                                 "prompt": prompt,
                                 "completion": completion,
                             }
@@ -508,29 +555,17 @@ def build_examples(raw_dir: Path, processor: Any, args: argparse.Namespace) -> t
     return examples, stats
 
 
-def download_dataset(args: argparse.Namespace) -> Path:
-    if args.raw_dir:
-        raw_dir = Path(args.raw_dir)
-        if not raw_dir.exists():
-            raise FileNotFoundError(raw_dir)
-        return raw_dir
-
-    from huggingface_hub import snapshot_download
-
-    raw_dir = Path(args.work_dir) / "raw"
-    snapshot_download(
-        repo_id=args.dataset_id,
-        repo_type="dataset",
-        allow_patterns=["*.jsonl"],
-        local_dir=str(raw_dir),
-    )
-    return raw_dir
+def local_raw_data(args: argparse.Namespace) -> Path:
+    path = local_directory(args.raw_dir, "Raw trace")
+    if not list(path.glob("*.jsonl")):
+        raise FileNotFoundError(f"No raw session *.jsonl files in {path}")
+    return path
 
 
 def load_processor(model_id: str) -> Any:
     from transformers import AutoTokenizer
 
-    return AutoTokenizer.from_pretrained(model_id)
+    return AutoTokenizer.from_pretrained(model_id, local_files_only=True, trust_remote_code=False)
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -545,7 +580,9 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def tokenization_check(processor: Any, examples: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any]:
+def tokenization_check(
+    processor: Any, examples: list[dict[str, Any]], args: argparse.Namespace
+) -> dict[str, Any]:
     tokenizer = getattr(processor, "tokenizer", processor)
     sample = examples[: min(32, len(examples))]
     lengths: list[int] = []
@@ -602,32 +639,90 @@ def filter_examples_by_length(
     }
 
 
-def make_dataset_splits(examples: list[dict[str, Any]], args: argparse.Namespace) -> tuple[Any, Any]:
+def split_rows(examples: list[dict[str, Any]], args: argparse.Namespace):
+    groups_override = json.loads(Path(args.split_groups).read_text()) if args.split_groups else {}
+    if not isinstance(groups_override, dict):
+        raise TypeError("--split-groups must contain a filename-to-group JSON object")
+    # Union provenance groups with byte-identical source files before assigning splits.
+    parent = {}
+
+    def find(key):
+        parent.setdefault(key, key)
+        if parent[key] != key:
+            parent[key] = find(parent[key])
+        return parent[key]
+
+    for row in examples:
+        group = str(groups_override.get(row["source_file"], row["group_id"]))
+        a, b = find("group:" + group), find("hash:" + row["source_sha256"])
+        parent[max(a, b)] = min(a, b)
+    grouped = {}
+    for row in examples:
+        key = find("hash:" + row["source_sha256"])
+        grouped.setdefault(key, []).append(row)
+    keys = sorted(grouped, key=lambda k: hashlib.sha256(f"{args.seed}:{k}".encode()).hexdigest())
+    if args.eval_size and len(keys) < 2:
+        raise ValueError(
+            "Validation requires at least two independent session groups; supply more traces or --eval-size 0"
+        )
+    target = min(args.eval_size, max(1, len(examples) // 20)) if args.eval_size else 0
+    eval_keys, size = set(), 0
+    for key in keys[:-1]:
+        if size >= target:
+            break
+        eval_keys.add(key)
+        size += len(grouped[key])
+    train = [r for k in keys if k not in eval_keys for r in grouped[k]]
+    evaluation = [r for k in keys if k in eval_keys for r in grouped[k]]
+    manifest = {
+        "seed": args.seed,
+        "policy": "session-and-duplicate-groups-v1",
+        "validation_target_rows": target,
+        "train": [
+            {
+                "id": r["id"],
+                "source_file": r["source_file"],
+                "group": find("hash:" + r["source_sha256"]),
+                "source_sha256": r["source_sha256"],
+            }
+            for r in train
+        ],
+        "validation": [
+            {
+                "id": r["id"],
+                "source_file": r["source_file"],
+                "group": find("hash:" + r["source_sha256"]),
+                "source_sha256": r["source_sha256"],
+            }
+            for r in evaluation
+        ],
+    }
+    return train, evaluation, manifest
+
+
+def make_dataset_splits(examples: list[dict[str, Any]], args: argparse.Namespace):
     from datasets import Dataset
 
-    rng = random.Random(args.seed)
-    shuffled = list(examples)
-    rng.shuffle(shuffled)
-    eval_size = min(args.eval_size, max(1, len(shuffled) // 20))
-    eval_rows = shuffled[:eval_size]
-    train_rows = shuffled[eval_size:]
-    return Dataset.from_list(train_rows), Dataset.from_list(eval_rows)
+    train, evaluation, manifest = split_rows(examples, args)
+    path = Path(args.output_dir) / "split_manifest.json"
+    if args.resume_from_checkpoint and (not path.is_file() or json.loads(path.read_text()) != manifest):
+        raise ValueError("Resume requires the original unchanged split manifest, data and seed")
+    write_json(path, manifest)
+    return Dataset.from_list(train), Dataset.from_list(evaluation)
 
 
 def resolve_lora_target_modules(model: Any, args: argparse.Namespace) -> list[str]:
-    if args.target_modules_regex:
+    if args.target_modules_regex and not args.target_modules:
         pattern = re.compile(args.target_modules_regex)
-        matched_modules = [(name, module) for name, module in model.named_modules() if pattern.fullmatch(name)]
+        matched_modules = [
+            (name, module) for name, module in model.named_modules() if pattern.fullmatch(name)
+        ]
         matches = [name for name, _module in matched_modules]
         if not matches:
             raise RuntimeError(f"no LoRA target modules matched regex: {args.target_modules_regex}")
-        sample = [
-            {"name": name, "type": type(module).__name__}
-            for name, module in matched_modules[:8]
-        ]
+        sample = [{"name": name, "type": type(module).__name__} for name, module in matched_modules[:8]]
         print(
-            "phase=lora_targets "
-            f"mode=regex count={len(matches)} sample={json.dumps(sample, sort_keys=True)}",
+            f"phase=lora_targets mode=regex count={len(matches)} sample={json.dumps(sample, sort_keys=True)}",
             flush=True,
         )
         return matches
@@ -636,19 +731,19 @@ def resolve_lora_target_modules(model: Any, args: argparse.Namespace) -> list[st
     if not modules:
         raise ValueError("no LoRA target modules configured")
     print(
-        "phase=lora_targets "
-        f"mode=suffix count={len(modules)} modules={json.dumps(modules, sort_keys=True)}",
+        f"phase=lora_targets mode=suffix count={len(modules)} modules={json.dumps(modules, sort_keys=True)}",
         flush=True,
     )
     return modules
 
 
-def train(examples: list[dict[str, Any]], processor: Any, stats: ConversionStats, args: argparse.Namespace) -> None:
-    import trackio
+def train(
+    examples: list[dict[str, Any]], processor: Any, stats: ConversionStats, args: argparse.Namespace
+) -> None:
     import torch
-    from huggingface_hub import HfApi
+    import trackio
     from peft import LoraConfig
-    from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+    from transformers import AutoModelForCausalLM, BitsAndBytesConfig, TrainerCallback
     from trl import SFTConfig, SFTTrainer
 
     def finish_trackio_safely() -> None:
@@ -658,17 +753,15 @@ def train(examples: list[dict[str, Any]], processor: Any, stats: ConversionStats
             if "Call trackio.init() before trackio.finish()" in str(exc):
                 return
             print(f"phase=trackio_finish_warning type={type(exc).__name__} message={exc}", flush=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - best-effort cleanup also runs during exception unwinding
             print(f"phase=trackio_finish_warning type={type(exc).__name__} message={exc}", flush=True)
 
-    os.environ.setdefault("TRACKIO_PROJECT", args.trackio_project)
+    os.environ["TRACKIO_PROJECT"] = args.trackio_project
     os.environ.setdefault("TRACKIO_DIR", str(Path(args.output_dir) / "trackio"))
-    if args.trackio_space_id:
-        os.environ.setdefault("TRACKIO_SPACE_ID", args.trackio_space_id)
 
     trackio_config = {
-        "model": args.model_id,
-        "dataset": args.dataset_id,
+        "model": args.model_path,
+        "dataset": str(Path(args.raw_dir).resolve()),
         "method": "sft_lora",
         "seed": args.seed,
         "learning_rate": args.learning_rate,
@@ -680,32 +773,28 @@ def train(examples: list[dict[str, Any]], processor: Any, stats: ConversionStats
         "lora_dropout": args.lora_dropout,
         "target_modules_regex": args.target_modules_regex,
         "target_modules": args.target_modules,
-        "hub_model_id": args.hub_model_id,
         "completion_only_loss": True,
     }
     print(
         "phase=trackio_init "
         f"project={args.trackio_project} run={args.run_name} "
-        f"group={args.trackio_group} space_id={args.trackio_space_id or 'local'}",
+        f"group={args.trackio_group} storage=local",
         flush=True,
     )
     trackio.init(
         project=args.trackio_project,
         name=args.run_name,
         group=args.trackio_group,
-        space_id=args.trackio_space_id or None,
-        private=args.trackio_private_space if args.trackio_space_id else None,
+        space_id=None,
+        resume="allow" if args.resume_from_checkpoint else "never",
         config=trackio_config,
     )
     atexit.register(finish_trackio_safely)
 
-    if args.push_to_hub and args.hub_model_id:
-        HfApi().create_repo(
-            repo_id=args.hub_model_id,
-            repo_type="model",
-            private=args.hub_private_repo,
-            exist_ok=True,
-        )
+    class LocalTrackingCallback(TrainerCallback):
+        def on_log(self, training_args, state, control, logs=None, **kwargs):
+            if logs:
+                trackio.log(logs, step=state.global_step)
 
     tokenizer = getattr(processor, "tokenizer", processor)
     if tokenizer.pad_token is None:
@@ -723,9 +812,11 @@ def train(examples: list[dict[str, Any]], processor: Any, stats: ConversionStats
 
     print("phase=load_model", flush=True)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_id,
+        args.model_path,
         dtype=torch.bfloat16 if args.bf16 else "auto",
-        device_map="auto",
+        device_map={"": args.device},
+        local_files_only=True,
+        trust_remote_code=False,
         quantization_config=quantization_config,
     )
     model.config.use_cache = False
@@ -762,23 +853,25 @@ def train(examples: list[dict[str, Any]], processor: Any, stats: ConversionStats
         bf16=args.bf16,
         optim=optim,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.03,
-        report_to="trackio",
+        warmup_steps=0.03,
+        report_to=[],
         run_name=args.run_name,
-        push_to_hub=args.push_to_hub,
-        hub_model_id=args.hub_model_id or None,
-        hub_private_repo=args.hub_private_repo,
+        push_to_hub=False,
         seed=args.seed,
         data_seed=args.seed,
         remove_unused_columns=True,
     )
 
+    # The pinned Trainer otherwise counts all visible GPUs and changes batch size.
+    # This template deliberately supports one selected device, not DataParallel.
+    training_args._n_gpu = 1
+
     write_json(
         Path(args.output_dir) / "conversion_stats.json",
         {
             **stats.__dict__,
-            "model_id": args.model_id,
-            "dataset_id": args.dataset_id,
+            "model_id": args.model_path,
+            "dataset_id": str(Path(args.raw_dir).resolve()),
             "train_examples": len(train_ds),
             "eval_examples": len(eval_ds),
             "max_length": args.max_length,
@@ -790,7 +883,7 @@ def train(examples: list[dict[str, Any]], processor: Any, stats: ConversionStats
     print(
         "phase=train_start "
         f"train_examples={len(train_ds)} eval_examples={len(eval_ds)} "
-        f"model={args.model_id} hub_model_id={args.hub_model_id or 'none'}",
+        f"model={args.model_path} device={args.device}",
         flush=True,
     )
     trainer = SFTTrainer(
@@ -800,30 +893,42 @@ def train(examples: list[dict[str, Any]], processor: Any, stats: ConversionStats
         eval_dataset=eval_ds if len(eval_ds) else None,
         peft_config=peft_config,
         processing_class=tokenizer,
+        callbacks=[LocalTrackingCallback()],
     )
-    train_result = trainer.train()
+    # Inspect the real collator output before starting an expensive run.
+    batch = next(iter(trainer.get_train_dataloader()))
+    if batch["input_ids"].shape[0] > args.per_device_train_batch_size:
+        raise ValueError("Trainer expanded the batch beyond the explicitly selected single-device profile")
+    if not (batch["labels"] != -100).any() or not (batch["labels"] == -100).any():
+        raise ValueError("Expected completion targets and masked prompt/padding tokens")
+    train_result = trainer.train(resume_from_checkpoint=args.resume_from_checkpoint or None)
     trainer.save_model(args.output_dir)
     trainer.save_state()
+    tokenizer.save_pretrained(args.output_dir)
     metrics = dict(train_result.metrics)
     metrics["train_examples"] = len(train_ds)
     metrics["eval_examples"] = len(eval_ds)
+    if args.device.startswith("cuda:"):
+        metrics["peak_gpu_memory_allocated_bytes"] = torch.cuda.max_memory_allocated(args.device)
+        metrics["peak_gpu_memory_reserved_bytes"] = torch.cuda.max_memory_reserved(args.device)
     trainer.save_metrics("train", metrics)
 
     if len(eval_ds):
-        final_eval_metrics = next(
-            (
-                row
-                for row in reversed(trainer.state.log_history)
-                if any(str(key).startswith("eval_") for key in row)
-            ),
-            None,
-        )
-        if final_eval_metrics:
-            trainer.save_metrics("eval", final_eval_metrics)
-
-    if args.push_to_hub:
-        print("phase=push_to_hub", flush=True)
-        trainer.push_to_hub()
+        trainer.save_metrics("eval", trainer.evaluate())
+    write_json(
+        Path(args.output_dir) / "artifact_manifest.json",
+        {
+            "base_model_path": str(Path(args.model_path).resolve()),
+            "base_model_files": json.loads((Path(args.output_dir) / "input_assets.json").read_text())[
+                "model_files"
+            ],
+            "adapter_files": {
+                p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in Path(args.output_dir).glob("adapter*")
+                if p.is_file()
+            },
+        },
+    )
 
     finish_trackio_safely()
     atexit.unregister(finish_trackio_safely)
@@ -832,9 +937,69 @@ def train(examples: list[dict[str, Any]], processor: Any, stats: ConversionStats
 
 def main() -> None:
     args = parse_args()
+    configure_local_runtime(args.runtime_dir)
+    validate_model(args.model_path)
     random.seed(args.seed)
-    raw_dir = download_dataset(args)
-    processor = load_processor(args.model_id)
+    raw_dir = local_raw_data(args)
+    if not args.prepare_only:
+        validate_device(args.device, args.load_in_4bit)
+        output = Path(args.output_dir)
+        if output.exists() and any(output.iterdir()) and not args.resume_from_checkpoint:
+            raise FileExistsError(f"Use a new output directory or --resume-from-checkpoint: {output}")
+        if args.resume_from_checkpoint:
+            checkpoint = local_directory(args.resume_from_checkpoint, "Checkpoint")
+            if (
+                not checkpoint.is_relative_to(output.resolve())
+                or not (checkpoint / "trainer_state.json").is_file()
+            ):
+                raise ValueError(
+                    "Resume checkpoint must belong to this output directory and include trainer state"
+                )
+            for filename in ("optimizer.pt", "scheduler.pt", "rng_state.pth"):
+                if not (checkpoint / filename).is_file():
+                    raise FileNotFoundError(f"Incomplete resume checkpoint: {filename}")
+            previous_step = json.loads((checkpoint / "trainer_state.json").read_text())["global_step"]
+            if args.max_steps > 0 and args.max_steps <= previous_step:
+                raise ValueError("Resume --max-steps must exceed the saved global step")
+        current = {k: v for k, v in vars(args).items() if k not in ("resume_from_checkpoint", "max_steps")}
+        config_path = output / "run_config.json"
+        if args.resume_from_checkpoint and (
+            not config_path.exists() or json.loads(config_path.read_text()) != current
+        ):
+            raise ValueError("Resume configuration differs from original run")
+        assets = {
+            "model_files": file_manifest(Path(args.model_path)),
+            "raw_files": {
+                p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(raw_dir.glob("*.jsonl"))
+            },
+        }
+        assets_path = output / "input_assets.json"
+        if args.resume_from_checkpoint and (
+            not assets_path.exists() or json.loads(assets_path.read_text()) != assets
+        ):
+            raise ValueError("Resume requires unchanged model and source data hashes")
+        write_json(assets_path, assets)
+        write_json(config_path, current)
+        write_json(
+            output / ("resume_invocation.json" if args.resume_from_checkpoint else "invocation.json"),
+            {
+                "argv": sys.argv,
+                "versions": {
+                    name: importlib.metadata.version(name)
+                    for name in (
+                        "torch",
+                        "transformers",
+                        "trl",
+                        "peft",
+                        "datasets",
+                        "trackio",
+                        "accelerate",
+                        "bitsandbytes",
+                    )
+                },
+            },
+        )
+    processor = load_processor(args.model_path)
     examples, stats = build_examples(raw_dir, processor, args)
     examples, length_filter = filter_examples_by_length(processor, examples, args)
     if len(examples) < 2:
@@ -844,8 +1009,8 @@ def main() -> None:
     write_jsonl(work_dir / "prepared_examples.sample.jsonl", examples[: min(100, len(examples))])
     summary: dict[str, Any] = {
         **stats.__dict__,
-        "model_id": args.model_id,
-        "dataset_id": args.dataset_id,
+        "model_id": args.model_path,
+        "dataset_id": str(Path(args.raw_dir).resolve()),
         "raw_dir": str(raw_dir),
         "examples": len(examples),
         "length_filter": length_filter,

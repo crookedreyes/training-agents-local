@@ -66,7 +66,7 @@ release-ready checkpoint.
 State gives the loop memory. The automation reads prior state before it
 researches or launches jobs. That state includes the automation memory file,
 `research/notes.md`, `research/results.tsv`, issue tables, Trackio dashboards,
-SLURM job ids, checkpoint paths, and release notes.
+local process/run ids, checkpoint paths, and release notes.
 
 The state should be specific enough to prevent duplicate work. A useful entry
 does not only say that a run failed. It says which model ran, which reward
@@ -91,8 +91,8 @@ experiment has a clear input, a clear output, and a clear decision rule.
 
 The plan should name the model and tokenizer, the training method, the dataset,
 the train and eval split, the reward function, the evaluator, the sweep size,
-the Trackio Space, the artifact path, and the score gate. It should also name
-the smallest smoke command that can fail before the full job consumes cluster
+the local Trackio project, the artifact path, and the score gate. It should also name
+the smallest smoke command that can fail before the full job consumes GPU
 time.
 
 The project uses TRL-native methods. TRL is the Hugging Face library used here
@@ -110,7 +110,7 @@ A plan should use skills and sub-agents as working roles:
 - `$hugging-face-cli-workflows` handles Hub, Jobs, buckets, and artifacts.
 - `training-planner` proposes the rung and ablations.
 - `trl-implementer` writes one coherent training path.
-- `tracking-reporter` checks SLURM, Trackio, and artifacts.
+- `tracking-reporter` checks local processes, Trackio, and artifacts.
 - `integrity-reviewer` checks the evaluator and release claim.
 
 The evaluator role is deliberately separate from implementation. The
@@ -125,21 +125,13 @@ first job should prove that tokenization, reward parsing, logging, and
 checkpoint saving work. A larger sweep should run only after that smoke test
 passes.
 
-The Hopper cluster rules are part of the execution contract. One-node jobs run
-on `hopper-prod`. Jobs larger than one node run on `hopper-extra`. Routine jobs
-use only `low` or `normal` priority. The automation should use FSx-backed
-caches, virtual environments, run roots, and temporary directories so a node
-does not fail from local disk pressure.
+Workstation execution follows [local execution](local-execution.md). Assign one
+GPU explicitly for the first run, keep prepared assets and caches on local disk,
+and measure memory before considering concurrency. The loop uses no remote Jobs,
+SLURM, hosted tracking, inference providers or automatic uploads.
 
-Each remote run should leave these records:
-
-- the exact command or SLURM script
-- the SLURM job id
-- model, dataset, and library versions
-- the Trackio dashboard or reason tracking was skipped
-- the checkpoint or artifact path
-- the evaluator command
-- the result summary
+Each run records its exact command, local run/process ID, asset hashes, package
+versions, local dashboard, checkpoint path, evaluator command and result summary.
 
 These records are not bookkeeping after the fact. They are the data the next
 loop uses.
@@ -162,7 +154,7 @@ surface. None of them replaces the benchmark gate. A checkpoint should move to
 release only when the evaluator shows improvement over the base model or the
 previous best adapter.
 
-The `integrity-reviewer` sub-agent should check this point before publication.
+The `integrity-reviewer` sub-agent should check this point before local promotion.
 It should look for train/eval leakage, hidden-label exposure, reward hacking,
 missing commands, unsupported claims, and proxy results presented as full
 benchmark results.
@@ -181,7 +173,7 @@ Some examples make the rule concrete. If reward variance is zero, redesign the
 prompt grouping or task sampling. If action syntax improves but task success
 stays flat, move to semantic data or a stronger model comparison. If a proxy
 score remains zero, do not claim Terminal-Bench progress. If a checkpoint beats
-the proxy but not the target, publish only if the README states the limitation.
+the proxy but not the target, promote locally only if the README states the limitation.
 
 This iteration rule keeps the automation from repeating the same experiment
 with new labels.

@@ -1,21 +1,9 @@
-# Log Inspection
-
-Prefer `rg` for local logs:
+# Local log inspection
 
 ```bash
-rg -n "ERROR|Traceback|CUDA|OOM|reward|eval|checkpoint|push_to_hub" logs/
+rg -n "ERROR|Traceback|CUDA|OOM|reward|eval|checkpoint" workspaces/local-agent/runs/
 ```
 
-For HF Jobs, use the configured CLI or project helper. Capture job id, status,
-last relevant lines, and artifact path.
-
-For SFTP, only connect when the user provides host, path, and credentials are
-already configured. Do not echo connection secrets. Copy only the requested
-logs or summaries.
-
-When summarizing logs:
-
-- include the command or path inspected
-- quote only short diagnostic lines
-- separate root cause from speculation
-- suggest the smallest rerun or fix
+Inspect local Trackio data, process status and artifacts. Report the command,
+exit status, latest metric/checkpoint and minimal next action. Do not emit secrets
+or full traces. Remote log inspection is not part of the local runtime.

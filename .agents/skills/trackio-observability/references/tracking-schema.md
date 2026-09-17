@@ -5,7 +5,7 @@ Use stable fields so runs can be compared:
 - `project`: broad challenge family, such as `training-agents-grpo`
 - `run_name`: concise method variant
 - `group`: sweep or ladder stage when useful
-- `space_id`: hosted Trackio Space for remote Jobs
+- `tracking_dir`: local Trackio data directory; dashboard binds loopback
 - `model`
 - `dataset`
 - `method`

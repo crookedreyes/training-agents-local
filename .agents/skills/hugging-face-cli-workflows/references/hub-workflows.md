@@ -1,26 +1,11 @@
-# Hub Workflows
+# Asset acquisition and local artifacts
 
-Common checks:
+Use existing filesystem assets or import an offline bundle first. If the user
+requests downloads, pin model/data revisions during setup and record hashes.
+`prepare_assets.py --download` is separate from offline runtime commands.
+Never call auth, Hub APIs or repository creation during training/evaluation.
 
-```bash
-hf auth whoami
-hf repo --help
-hf upload --help
-hf download --help
-```
-
-Use model repos for trained models and adapters, dataset repos for generated
-training/eval data, and Spaces for dashboards or demos.
-
-Artifact checklist:
-
-- model or adapter weights
-- tokenizer and chat template
-- trainer config
-- generation config
-- eval script or command
-- metrics
-- README/model card notes
-
-For private or sensitive work, create private repos and avoid public datasets
-until licensing and data provenance are clear.
+Store base weights, tokenizer/template and shards together. Save adapters with
+base-model hashes, run configuration, split manifest, metrics and eval logs under
+ignored workspaces. An adapter alone cannot replace its base model.
+See `docs/local-execution.md` for exact setup and runtime commands.

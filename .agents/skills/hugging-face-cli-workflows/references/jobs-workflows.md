@@ -1,23 +1,9 @@
-# Jobs Workflows
+# Local job execution
 
-HF Jobs are useful for cloud GPU training and smoke tests.
+Use explicit workstation GPU assignments and local process IDs. Start with one
+GPU, a small token budget and a 1–5 step smoke. Keep caches, outputs and temporary
+data on disk under ignored workspaces. Do not launch HF Jobs or require a cluster.
 
-Before launch:
-
-- check auth
-- verify paid account or available compute
-- confirm dataset access
-- estimate runtime and timeout
-- ensure output pushes to Hub or persistent storage
-- pass required secrets without printing values
-
-For TRL scripts:
-
-- include dependencies or use a maintained script URL
-- log remote training with Trackio and a hosted Space via `space_id`
-- write model artifacts to `output_dir`
-- push to Hub when the runner is ephemeral
-- capture exact command, job id, dashboard Space URL, and artifact repo
-
-When inspecting Jobs, summarize status and last relevant log lines rather than
-dumping full logs.
+Record command, versions, input hashes, split, local Trackio directory, checkpoint
+and evaluation paths. Save before post-eval and expose a tested resume command.
+Use `rg` and local process status to diagnose failures before rerunning.

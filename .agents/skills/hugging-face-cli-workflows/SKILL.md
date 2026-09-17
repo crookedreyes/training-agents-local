@@ -1,30 +1,20 @@
 ---
 name: hugging-face-cli-workflows
-description: Use when working with Hugging Face CLI or Hub workflows for TRL training, including auth, repositories, uploads, downloads, Jobs, buckets, model persistence, dataset checks, Space links, and remote artifact movement.
+description: Use when working with Hugging Face CLI or Hub workflows for TRL training, including explicit setup downloads, offline asset bundles, revisions, dataset checks, and local model persistence.
 ---
 
 # Hugging Face CLI Workflows
 
-Use this skill for Hub, CLI, Jobs, buckets, and artifact workflows around TRL
-training.
+Use HF libraries locally. Network CLI/API actions belong only to an explicitly
+requested asset-preparation step. Runtime never checks auth, downloads missing
+assets, launches HF Jobs, uploads artifacts or creates Spaces.
 
-## Workflow
+- Prefer existing local model/data copies or an imported offline bundle.
+- For requested acquisition, pin revisions and record hashes; never print tokens.
+- Use `examples/gemma4-pi-mono-sft/prepare_assets.py` for explicit setup and
+  `docs/local-execution.md` for local artifact layout and commands.
+- Save adapters, tokenizer/template, run config, split manifest, metrics and logs
+  under ignored local workspaces; adapters require their recorded local base model.
 
-1. Check auth with `hf auth whoami` before remote actions.
-2. Identify the target type: model repo, dataset repo, Space, Job, or bucket.
-3. Keep scripts portable: remote Jobs cannot read local files unless the script
-   is uploaded, inlined, or available by URL.
-4. Ensure ephemeral runners push or upload artifacts before completion.
-5. Summarize exact repo ids, job ids, paths, and commands.
-
-## Safety
-
-- Never print `HF_TOKEN` or credentials.
-- Use private repos or buckets for non-public data by default.
-- Confirm before deleting or overwriting Hub artifacts.
-- Keep large checkpoints outside this context repository.
-
-## References
-
-- `references/hub-workflows.md`: auth, repos, upload/download, and artifacts.
-- `references/jobs-workflows.md`: HF Jobs conventions for TRL runs.
+References: `references/hub-workflows.md` covers explicit acquisition/import;
+`references/jobs-workflows.md` covers replacing remote jobs with local execution.

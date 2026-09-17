@@ -11,21 +11,10 @@ The Hub docs warn that traces can contain prompts, tool inputs, command output,
 local paths, screenshots, secrets, private code, and personal data. Review and
 redact traces before public upload or training.
 
-Upload patterns from the Hub docs:
-
-```bash
-hf upload <username>/<dataset-name> ~/.codex/sessions . --repo-type dataset
-hf buckets sync ~/.codex/sessions hf://buckets/<username>/<bucket-name>/codex
-```
-
-SFT command pattern for a public synthetic trace dataset:
-
-```bash
-trl sft \
-  --model_name_or_path Qwen/Qwen2.5-0.5B \
-  --dataset_name julien-c/synthtraces \
-  --output_dir outputs/sft-synthtraces-smoke
-```
+Copy only the selected reviewed trace files into a local dataset directory.
+Do not upload traces or read every local agent session automatically. Convert
+bespoke formats into the local template schema before training. The existing
+converter accepts Pi-Mono raw sessions; other formats need a separate converter.
 
 Use trace data only after deciding what the student should imitate:
 

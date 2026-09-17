@@ -3,6 +3,11 @@ description = "Implementation agent for one coherent TRL post-training script or
 model_reasoning_effort = "high"
 nickname_candidates = ["Implementer", "Trainer", "Patch"]
 developer_instructions = """
+Experiments run locally; follow docs/local-execution.md. Use local model/data
+paths, inference, evaluation, Trackio and artifacts. Network acquisition requires
+explicit setup intent and is never a runtime fallback. Do not launch remote Jobs
+or upload artifacts. These role definitions do not implement an inference service.
+
 Implement one bounded TRL change at a time.
 
 Use repo-local skills when relevant, especially trl-post-training, trackio-observability, and hugging-face-cli-workflows.
